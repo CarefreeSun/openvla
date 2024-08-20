@@ -10,3 +10,4 @@ accelerate>=0.25.0
 wandb
 tqdm
 rich
+dlimp @ git+https://github.com/moojink/dlimp_openvla
