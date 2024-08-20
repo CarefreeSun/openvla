@@ -7,3 +7,4 @@ peft==0.11.1
 draccus
 tensorflow_datasets
 tqdm
+rich
