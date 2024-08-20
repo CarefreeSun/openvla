@@ -104,7 +104,7 @@ class FinetuneConfig:
     max_steps: int =  318990                                        # Max number of fine-tuning steps
     save_steps: int = 1000                                          # Interval for checkpoint saving
     learning_rate: float = 2e-5                                     # Fine-tuning learning rate
-    grad_accumulation_steps: int = 8                             # Gradient accumulation steps
+    grad_accumulation_steps: int = 4                             # Gradient accumulation steps
     image_aug: bool = True                                          # Whether to train with image augmentations
     shuffle_buffer_size: int = 100_000                              # Dataloader shuffle buffer size (can reduce if OOM)
 
