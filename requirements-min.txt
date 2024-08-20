@@ -4,7 +4,9 @@ torch>=2.2.0
 torchvision>=0.16.0
 transformers==4.40.1
 peft==0.11.1
-draccus
-tensorflow_datasets
+draccus==0.8.0
+tensorflow_datasets==4.9.3
+accelerate>=0.25.0
+wandb
 tqdm
 rich
