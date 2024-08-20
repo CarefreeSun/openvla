@@ -100,11 +100,11 @@ class FinetuneConfig:
 
     # Fine-tuning Parameters
     epochs: int = 30                                                 # Number of fine-tuning epochs
-    batch_size: int = 1                                           # Fine-tuning batch size
+    batch_size: int = 4                                           # Fine-tuning batch size
     max_steps: int =  318990                                        # Max number of fine-tuning steps
     save_steps: int = 1000                                          # Interval for checkpoint saving
     learning_rate: float = 2e-5                                     # Fine-tuning learning rate
-    grad_accumulation_steps: int = 8                             # Gradient accumulation steps
+    grad_accumulation_steps: int = 2                             # Gradient accumulation steps
     image_aug: bool = True                                          # Whether to train with image augmentations
     shuffle_buffer_size: int = 100_000                              # Dataloader shuffle buffer size (can reduce if OOM)
 
@@ -159,14 +159,14 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_quantization:
         assert cfg.use_lora, "Quantized training only supported for LoRA fine-tuning!"
         quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_compute_dtype=torch.float32, bnb_4bit_quant_type="nf4"
+            load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16, bnb_4bit_quant_type="nf4"
         )
 
     # Load OpenVLA Processor and Model using HF AutoClasses
     processor = AutoProcessor.from_pretrained(cfg.vla_path, trust_remote_code=True)
     vla = AutoModelForVision2Seq.from_pretrained(
         cfg.vla_path,
-        torch_dtype=torch.float32,
+        torch_dtype=torch.float16,
         quantization_config=quantization_config,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
@@ -268,11 +268,11 @@ def finetune(cfg: FinetuneConfig) -> None:
         vla.train()
         optimizer.zero_grad()
         for batch_idx, batch in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
-            with torch.autocast("cuda", dtype=torch.float32):
+            with torch.autocast("cuda", dtype=torch.float16):
                 output: CausalLMOutputWithPast = vla(
                     input_ids=batch["input_ids"].to(device_id),
                     attention_mask=batch["attention_mask"].to(device_id),
-                    pixel_values=batch["pixel_values"].to(torch.float32).to(device_id),
+                    pixel_values=batch["pixel_values"].to(torch.float16).to(device_id),
                     labels=batch["labels"],
                 )
                 loss = output.loss
@@ -357,7 +357,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             # vla.module.save_pretrained(os.path.join(save_dir, f'Task_id{task_id}-B{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{gradient_step_idx}'))
             vla.save_pretrained(os.path.join(save_dir, f'task{task_id}-b{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{epoch}'))
             base_vla = AutoModelForVision2Seq.from_pretrained(
-                cfg.vla_path, torch_dtype=torch.float32, low_cpu_mem_usage=True, trust_remote_code=True
+                cfg.vla_path, torch_dtype=torch.float16, low_cpu_mem_usage=True, trust_remote_code=True
             )
             save_dir = os.path.join(adapter_dir, task_id)
             merged_vla = PeftModel.from_pretrained(base_vla, os.path.join(save_dir, f'task{task_id}-b{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{epoch}'))
