@@ -103,7 +103,7 @@ class FinetuneConfig:
     batch_size: int = 4                                           # Fine-tuning batch size
     max_steps: int =  318990                                        # Max number of fine-tuning steps
     save_steps: int = 1000                                          # Interval for checkpoint saving
-    learning_rate: float = 1e-7                                     # Fine-tuning learning rate
+    learning_rate: float = 1e-5                                     # Fine-tuning learning rate
     grad_accumulation_steps: int = 2                             # Gradient accumulation steps
     image_aug: bool = True                                          # Whether to train with image augmentations
     shuffle_buffer_size: int = 100_000                              # Dataloader shuffle buffer size (can reduce if OOM)
@@ -194,6 +194,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     # vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
 
     # Create Optimizer =>> note that we default to a simple constant learning rate!
+    for params in vla.parameters():
+        torch.nn.utils.clip_grad_value_(params, 0.001)
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
 
