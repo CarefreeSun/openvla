@@ -1,24 +1,3 @@
-"""
-finetune.py
-
-Simple script for parameter-efficient fine-tuning of OpenVLA models loaded through the HuggingFace AutoClasses, using
-HuggingFace PEFT library for low-rank adaptation (LoRA).
-
-Notes & Benchmarks:
-    - Requires PEFT (`pip install peft==0.11.1`)
-    - LoRA fine-tuning (see parameters below -- no quantization, LoRA rank = 32, target_modules = all-linear):
-        + One 48 GB GPU can fit a Batch Size of 12
-        + One 80 GB GPU can fit a Batch Size of 24
-
-Run with:
-    - [Single Node Multi-GPU (= $K) ]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py
-    - [Override Config Values]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py \
-                                    --data_root_dir <PATH/TO/RLDS/DATASETS/DIRECTORY> \
-                                    --dataset_name <DATASET_NAME> \
-                                    --run_root_dir <PATH/TO/LOGS/DIR> \
-                                    ...
-"""
-
 import os
 import logging
 from collections import deque
@@ -37,12 +16,9 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-# import wandb
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
-from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 #import pizzadataset
 from pizza_dataset import PizzaDataset
@@ -50,42 +26,22 @@ from pizza_dataset import PizzaDataset
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-# # === Utilities ===
-# # fmt: off
-# def create_vision_transform(vla: nn.Module, input_size: int) -> Callable[[Image.Image], torch.Tensor]:
-#     """Gets image transform for the vision encoder."""
-#     data_cfg = timm.data.resolve_model_data_config(vla.vision_backbone)
-#     data_cfg["input_size"] = (3, input_size, input_size)
-#     return timm.data.create_transform(
-#         input_size=data_cfg["input_size"],
-#         interpolation=data_cfg["interpolation"],
-#         mean=data_cfg["mean"],
-#         std=data_cfg["std"],
-#         crop_pct=1.0,           # Set to 1.0 to disable cropping
-#         crop_mode="center",     # Default crop mode --> no-op when `crop_pct == 1.0`
-#         is_training=False,      # Disable image_aug when loading transform; handled by RLDS dataloader
-#     )
-#
-# # fmt: on
-
 def get_logger(file_path):
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+
     rf_handler = logging.StreamHandler()
     rf_handler.setLevel(logging.INFO)
     rf_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    if file_path is not None:
+    logger.addHandler(rf_handler)
+
+    if file_path:
         f_handler = logging.FileHandler(file_path)
         f_handler.setLevel(logging.INFO)
         f_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    logger.addHandler(rf_handler)
-    if file_path is not None: logger.addHandler(f_handler)
+        logger.addHandler(f_handler)
     
     return logger
-    
-
 
 @dataclass
 class FinetuneConfig:
@@ -117,11 +73,6 @@ class FinetuneConfig:
     use_quantization: bool = False                                  # Whether to 4-bit quantize VLA for LoRA fine-tuning
                                                                     #   => CAUTION: Reduces memory but hurts performance
 
-    # Tracking Parameters
-    wandb_project: str = "openvla"                                  # Name of W&B project to log to (use default!)
-    wandb_entity: str = "stanford-voltron"                          # Name of entity to log under
-
-    # fmt: on
 
 
 @draccus.wrap()
@@ -129,7 +80,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     log_path = os.path.join(cfg.run_root_dir, f"id{cfg.task_id}-lr{cfg.learning_rate}.log")
     logger = get_logger(log_path)
     logger.info(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
-    # print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
 
     # [Validate] Ensure GPU Available & Set Device / Distributed Context
     assert torch.cuda.is_available(), "Fine-tuning assumes at least one GPU is available!"
@@ -193,35 +143,12 @@ def finetune(cfg: FinetuneConfig) -> None:
     vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
 
     # Create Optimizer =>> note that we default to a simple constant learning rate!
-    # for params in vla.parameters():
-    #     torch.nn.utils.clip_grad_value_(params, 0.001)
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
 
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
 
-    # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
-    #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
-    #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
-    #       your own Dataset, make sure to add the appropriate logic to the training loop!
-    #
-    # ---
-    # from prismatic.vla.datasets import DummyDataset
-    #
-    # vla_dataset = DummyDataset(
-    #     action_tokenizer,
-    #     processor.tokenizer,
-    #     image_transform=processor.image_processor.apply_transform,
-    #     prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
-    # )
-    # ---
-    # batch_transform = RLDSBatchTransform(
-    #     action_tokenizer,
-    #     processor.tokenizer,
-    #     image_transform=processor.image_processor.apply_transform,
-    #     prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
-    # )
     pizza_data = PizzaDataset(
         cfg.pizza_dir,
         action_tokenizer,
@@ -229,22 +156,6 @@ def finetune(cfg: FinetuneConfig) -> None:
         processor.image_processor.apply_transform,
         prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
     )
-    # vla_dataset = RLDSDataset(
-    #     cfg.data_root_dir,
-    #     cfg.dataset_name,
-    #     batch_transform,
-    #     resize_resolution=tuple(vla.config.image_sizes),
-    #     # resize_resolution=tuple(vla.module.config.image_sizes),
-    #     shuffle_buffer_size=cfg.shuffle_buffer_size,
-    #     image_aug=cfg.image_aug,
-    # )
-
-    # [Important] Save Dataset Statistics =>> used to de-normalize actions for inference!
-    if distributed_state.is_main_process:
-        dataset_run_dir = os.path.join(run_dir, task_id)
-        os.makedirs(dataset_run_dir, exist_ok=True)
-    # save_dataset_statistics(vla_dataset.dataset_statistics, dataset_run_dir)
-    # is NEED?
 
     # Create Collator and DataLoader
     collator = PaddedCollatorForActionPrediction(
@@ -258,7 +169,6 @@ def finetune(cfg: FinetuneConfig) -> None:
         collate_fn=collator,
         num_workers=4,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
     )
-    # logger.info(f"Loaded {len(vla_dataset)} samples from {cfg.dataset_name} dataset compose of a dataloader with batch size {cfg.batch_size} and {cfg.grad_accumulation_steps} gradient accumulation steps, total dataloader steps {len(dataloader)}")
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_losses = deque(maxlen=cfg.grad_accumulation_steps)
@@ -266,10 +176,10 @@ def finetune(cfg: FinetuneConfig) -> None:
     recent_l1_losses = deque(maxlen=cfg.grad_accumulation_steps)
 
     # Train!
-    for epoch in tqdm.tqdm(range(cfg.epochs)):
+    for epoch in tqdm.tqdm(range(cfg.epochs), desc="Epochs"):
         vla.train()
         optimizer.zero_grad()
-        for batch_idx, batch in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
+        for batch_idx, batch in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc="Batches"):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output: CausalLMOutputWithPast = vla(
                     input_ids=batch["input_ids"].to(device_id),
@@ -330,27 +240,6 @@ def finetune(cfg: FinetuneConfig) -> None:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
-            if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0 and distributed_state.is_main_process:
-                logger.info(f"Skip saving for now ... ")
-                logger.info(f"Current Step: {gradient_step_idx}")
-                # logger.info(f"Saving Model Checkpoint for Step {gradient_step_idx}")
-                # print(f"Saving Model Checkpoint for Step {gradient_step_idx}")
-
-                # # If LoRA, we first save adapter weights, then merge into full model; otherwise, default save!
-                # save_dir = adapter_dir if cfg.use_lora else run_dir
-                # save_dir = os.path.join(save_dir, task_id)
-
-                # # Save Processor & Weights
-                # processor.save_pretrained(os.path.join(save_dir, f'Task_id{task_id}-B{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{gradient_step_idx}'))
-                # # vla.module.save_pretrained(os.path.join(save_dir, f'Task_id{task_id}-B{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{gradient_step_idx}'))
-                # vla.save_pretrained(os.path.join(save_dir, f'Task_id{task_id}-B{cfg.batch_size}-{cfg.dataset_name}-{cfg.learning_rate}-{gradient_step_idx}'))
-                
-                # Wait for processor and adapter weights to be saved by main process
-                dist.barrier()
-
-                # Merge LoRA weights into model backbone for faster inference
-                #   =>> Note that merging is slow and can be done post-hoc to speed up training
         if cfg.use_lora and distributed_state.is_main_process:
             logger.info(f"Saving Model Checkpoint for epoch {epoch}")
             save_dir = adapter_dir if cfg.use_lora else run_dir
@@ -374,7 +263,4 @@ def finetune(cfg: FinetuneConfig) -> None:
             dist.barrier()
 
 if __name__ == "__main__":
-    #set cuda visible device
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     finetune()
-    
