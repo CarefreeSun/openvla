@@ -100,11 +100,11 @@ class FinetuneConfig:
 
     # Fine-tuning Parameters
     epochs: int = 30                                                 # Number of fine-tuning epochs
-    batch_size: int = 4                                           # Fine-tuning batch size
+    batch_size: int = 8                                        # Fine-tuning batch size
     max_steps: int =  318990                                        # Max number of fine-tuning steps
     save_steps: int = 1000                                          # Interval for checkpoint saving
-    learning_rate: float = 1e-5                                     # Fine-tuning learning rate
-    grad_accumulation_steps: int = 2                             # Gradient accumulation steps
+    learning_rate: float = 2e-5                                     # Fine-tuning learning rate
+    grad_accumulation_steps: int = 1                             # Gradient accumulation steps
     image_aug: bool = True                                          # Whether to train with image augmentations
     shuffle_buffer_size: int = 100_000                              # Dataloader shuffle buffer size (can reduce if OOM)
 
