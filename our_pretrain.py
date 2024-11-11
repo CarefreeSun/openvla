@@ -128,8 +128,8 @@ def pretrain(cfg: PretrainConfig) -> None:
 
     hf_token = cfg.hf_token.read_text().strip() if isinstance(cfg.hf_token, Path) else os.environ[cfg.hf_token]
     worker_init_fn = set_global_seed(cfg.seed, get_worker_init_fn=True)
-    os.makedirs(run_dir := (cfg.run_root_dir / cfg.run_id), exist_ok=True)
-    os.makedirs(cfg.run_root_dir / cfg.run_id / "checkpoints", exist_ok=True)
+    run_dir = cfg.run_root_dir / cfg.run_id
+    os.makedirs(run_dir / "checkpoints", exist_ok=True)
 
     if overwatch.is_rank_zero():
         draccus.dump(cfg, open(run_dir / "config.yaml", "w"))
@@ -165,7 +165,6 @@ def pretrain(cfg: PretrainConfig) -> None:
         prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
     )
 
-    '''
     collator = PaddedCollatorForActionPrediction(
         tokenizer.model_max_length, tokenizer.pad_token_id, padding_side="right"
     )
@@ -176,6 +175,7 @@ def pretrain(cfg: PretrainConfig) -> None:
         default_image_resolution=vision_backbone.default_image_resolution,
         padding_side=tokenizer.padding_side,  
     )
+    '''
     
     dataloader = DataLoader(
         pizza_data,
@@ -232,8 +232,9 @@ def pretrain(cfg: PretrainConfig) -> None:
 
     # And... we're done!
     overwatch.info("... and that's all, folks!")
-    dist.barrier()
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
