@@ -33,16 +33,15 @@ import yaml
 from torch.utils.data import DataLoader
 from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
 
-from prismatic.conf import DatasetConfig, DatasetRegistry, ModelConfig, ModelRegistry
+from prismatic.conf import ModelConfig, ModelRegistry
 from prismatic.overwatch import initialize_overwatch
-from prismatic.preprocessing import get_dataset_and_collator
 from prismatic.training import Metrics, get_train_strategy
 from prismatic.util import set_global_seed
 
 # Import methods from single_finetune.py
 from pizza_dataset import PizzaDataset
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.util.data_utils import PaddedCollatorForActionPrediction
+from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedCollatorForLanguageModeling
 
 # Disable Tokenizers Parallelism to Play Nice w/ PyTorch Multiprocessing DataLoaders
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -54,12 +53,17 @@ overwatch = initialize_overwatch(__name__)
 class PretrainConfig:
     # fmt: off
 
-    vla_path: str = "openvla/openvla-7b"  # 这里直接指定模型的路径
+    # ModelConfig (`prismatic/conf/models.py`); override with --model.type `ModelRegistry.<MODEL>.model_id`
+    model: ModelConfig = field(
+        default_factory=ModelConfig.get_choice_class(ModelRegistry.PRISM_DINOSIGLIP_CONTROLLED_7B.model_id)
+    )
+    
+    vla_path: str = "openvla/openvla-7b"
     pizza_dir: Path = Path("/mnt/data-rundong/robot_datasets/pizza/task_04/pizza_dataset_dataset/1.0.0/")  # 数据集路径
 
     # Pretraining Stage in < align (projector-only) | finetune (projector + LLM) | full-finetune (all) >
     # ---
-    stage: str = "finetune"                                         # Pretraining Stage in < align | finetune >
+    stage: str = "full-finetune"                                    # Pretraining Stage in < align | finetune >
     pretrained_checkpoint: Optional[Path] = None                    # Pretrained Checkpoint to Load (for `finetune`)
                                                                     #   if None =>> will match on (run_dir / `align`)
 
@@ -111,64 +115,73 @@ class PretrainConfig:
 
     # fmt: on
 
-
 @draccus.wrap()
 def pretrain(cfg: PretrainConfig) -> None:
     overwatch.info("Prismatic VLM Training :: Gathering Light")
 
-    # Note => Under `torchrun` initializing `overwatch` will automatically set up `torch.distributed`
     torch.cuda.set_device(device_id := overwatch.local_rank())
     torch.cuda.empty_cache()
 
-    # Create Unique Run Name & Save Directory
-    model_id = cfg.model.model_id
-    dataset_id = cfg.dataset.dataset_id
+    model_id = cfg.vla_path
+    dataset_id = "pizza_dataset"
     cfg.run_id = f"{model_id}+stage-{cfg.stage}+x{cfg.seed}" if cfg.run_id is None else cfg.run_id
 
-    # Start =>> Build Directories and Set Randomness
-    overwatch.info('"Life is like a prism; what you see depends on how you turn the glass."', ctx_level=1)
     hf_token = cfg.hf_token.read_text().strip() if isinstance(cfg.hf_token, Path) else os.environ[cfg.hf_token]
     worker_init_fn = set_global_seed(cfg.seed, get_worker_init_fn=True)
     os.makedirs(run_dir := (cfg.run_root_dir / cfg.run_id), exist_ok=True)
     os.makedirs(cfg.run_root_dir / cfg.run_id / "checkpoints", exist_ok=True)
 
     if overwatch.is_rank_zero():
-        # Additionally save a JSON version of the config
         draccus.dump(cfg, open(run_dir / "config.yaml", "w"))
         with open(run_dir / "config.yaml", "r") as f_yaml, open(run_dir / "config.json", "w") as f_json:
             yaml_cfg = yaml.safe_load(f_yaml)
             json.dump(yaml_cfg, f_json, indent=2)
 
     # === Load Model and Processor using single_finetune's method ===
-    processor = AutoProcessor.from_pretrained(cfg.model.model_id, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(cfg.vla_path, trust_remote_code=True)
+    tokenizer = processor.tokenizer  # Initialize tokenizer
     model = AutoModelForVision2Seq.from_pretrained(
-        cfg.model.model_id,
+        cfg.vla_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
     model = model.to(device_id)
+    
+    model.enable_gradient_checkpointing = cfg.model.enable_gradient_checkpointing
+    model.enable_mixed_precision_training = cfg.model.enable_mixed_precision_training
+    model.reduce_in_full_precision = cfg.model.reduce_in_full_precision
 
     # Initialize Action Tokenizer
-    action_tokenizer = ActionTokenizer(processor.tokenizer)
+    action_tokenizer = ActionTokenizer(tokenizer)
 
-    # Load dataset (PizzaDataset as used in single_finetune)
+    # Get Dataset for Specified Stage
+    overwatch.info(f"Creating Dataset `{cfg.dataset.dataset_id}` => Stage: `{cfg.stage}`")
     pizza_data = PizzaDataset(
-        cfg.dataset.pizza_dir,
+        cfg.pizza_dir,
         action_tokenizer,
-        processor.tokenizer,
+        tokenizer,
         processor.image_processor.apply_transform,
-        prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.model.model_id else VicunaV15ChatPromptBuilder,
+        prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
     )
 
-    # Data Collator and Loader
+    '''
     collator = PaddedCollatorForActionPrediction(
-        processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
+        tokenizer.model_max_length, tokenizer.pad_token_id, padding_side="right"
     )
+    '''
+     collator = PaddedCollatorForLanguageModeling(
+        model_max_length=tokenizer.model_max_length,
+        pad_token_id=tokenizer.pad_token_id,
+        default_image_resolution=vision_backbone.default_image_resolution,
+        padding_side=tokenizer.padding_side,  
+    )
+    
     dataloader = DataLoader(
         pizza_data,
         batch_size=cfg.per_device_batch_size,
         shuffle=True,
+        sampler=None,
         collate_fn=collator,
         num_workers=4,
     )
@@ -189,9 +202,9 @@ def pretrain(cfg: PretrainConfig) -> None:
         max_grad_norm=cfg.max_grad_norm,
         lr_scheduler_type=cfg.lr_scheduler_type,
         warmup_ratio=cfg.warmup_ratio,
-        enable_gradient_checkpointing=cfg.model.enable_gradient_checkpointing,
-        enable_mixed_precision_training=cfg.model.enable_mixed_precision_training,
-        reduce_in_full_precision=cfg.model.reduce_in_full_precision,
+        enable_gradient_checkpointing=model.enable_gradient_checkpointing,
+        enable_mixed_precision_training=model.enable_mixed_precision_training,
+        reduce_in_full_precision=model.reduce_in_full_precision,
         worker_init_fn=worker_init_fn,
     )
     train_strategy.run_setup(run_dir=run_dir, n_train_examples=len(pizza_data))
