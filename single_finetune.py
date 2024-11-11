@@ -1,5 +1,5 @@
 """
-finetune.py
+single_finetune.py
 
 Simple script for parameter-efficient fine-tuning of OpenVLA models loaded through the HuggingFace AutoClasses, using
 HuggingFace PEFT library for low-rank adaptation (LoRA).
