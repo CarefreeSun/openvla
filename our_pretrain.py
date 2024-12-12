@@ -38,7 +38,6 @@ from prismatic.overwatch import initialize_overwatch
 from prismatic.training import Metrics, get_train_strategy
 from prismatic.util import set_global_seed
 
-# Import methods from single_finetune.py
 from pizza_dataset import PizzaDataset
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedCollatorForLanguageModeling
