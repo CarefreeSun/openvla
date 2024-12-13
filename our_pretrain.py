@@ -38,7 +38,7 @@ from prismatic.overwatch import initialize_overwatch
 from prismatic.training import Metrics, get_train_strategy
 from prismatic.util import set_global_seed
 
-from pizza_dataset import PizzaDataset
+from ManiSkillToPizzaDataset import ManiSkillToPizzaDataset
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedCollatorForLanguageModeling
 
@@ -58,7 +58,7 @@ class PretrainConfig:
     )
     
     vla_path: str = "openvla/openvla-7b"
-    pizza_dir: Path = Path("/mnt/data-rundong/robot_datasets/pizza/task_04/pizza_dataset_dataset/1.0.0/")  # 数据集路径
+    pizza_file: str ='/mnt/songhuang/dataManiSkill/PlugCharger-v1/trajectory.rgb.pd_joint_pos.cpu.h5' # Path = Path("/mnt/songhuang/robot_datasets/pizza/task_04/pizza_dataset_dataset/1.0.0/")  # 数据集路径
 
     # Pretraining Stage in < align (projector-only) | finetune (projector + LLM) | full-finetune (all) >
     # ---
@@ -68,7 +68,7 @@ class PretrainConfig:
 
     # Run Arguments
     run_id: Optional[str] = None                                    # Run ID for logging, Weights & Biases
-    run_root_dir: Path = Path("/mnt/fsx/x-prismatic-vlms/runs")     # Path to directory to store logs & checkpoints
+    run_root_dir: Path = Path("/mnt/songhuang/openvla/runs")     # Path to directory to store logs & checkpoints
     seed: int = 7                                                   # Random seed (for reproducibility)
 
     # HF Hub Credentials (for any gated models)
@@ -156,8 +156,8 @@ def pretrain(cfg: PretrainConfig) -> None:
 
     # Get Dataset for Specified Stage
     overwatch.info(f"Creating Dataset `{cfg.dataset.dataset_id}` => Stage: `{cfg.stage}`")
-    pizza_data = PizzaDataset(
-        cfg.pizza_dir,
+    pizza_data = ManiSkillToPizzaDataset(
+        cfg.pizza_file,
         action_tokenizer,
         tokenizer,
         processor.image_processor.apply_transform,
