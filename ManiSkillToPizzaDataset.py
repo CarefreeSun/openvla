@@ -1,4 +1,5 @@
 from typing import Union
+import re
 import gzip
 import json
 import h5py
@@ -70,12 +71,12 @@ class ManiSkillToPizzaDataset(Dataset):
     """
     
     def __init__(self, dataset_file: str, action_tokenizer, processor, image_transform, prompt_builder_fn, load_count=-1, success_only=False, device=None) -> None:
-        '''self.batchTransform = RLDSBatchTransform(
+        self.batchTransform = RLDSBatchTransform(
             action_tokenizer,
             processor.tokenizer,
             image_transform,
             prompt_builder_fn)
-        '''
+        
         # 加载 ManiSkill 数据集
         self.dataset_file = dataset_file
         # self.device = device
@@ -88,7 +89,17 @@ class ManiSkillToPizzaDataset(Dataset):
         #并不有用
         self.env_id = self.env_info["env_id"]
         self.env_kwargs = self.env_info["env_kwargs"]
+        def convert_env_id_to_language_instruction(env_id):
+            """
+            PlugCharger-v1 -> Plug charger
+            """
+            # 移除版本号 (-v1, -v2, 等)
+            env_id = env_id.split("-")[0]
+            # 按大写字母分隔，转为小写并用空格连接
+            language_instruction = " ".join([word.lower() for word in re.findall(r'[A-Z][^A-Z]*', env_id)])
+            return language_instruction
 
+        self.language_instruction = convert_env_id_to_language_instruction(self.env_id)
         self.data = []
         
         # 加载和处理轨迹数据
@@ -108,15 +119,14 @@ class ManiSkillToPizzaDataset(Dataset):
             obs = index_dict_array(trajectory["obs"], slice(eps_len))
             obs = remove_np_uint16(obs)
 
-            # 将数据转换为 PizzaDataset 格式
             for idx in range(eps_len - 1):
                 data_pack = {}
                 data_pack["dataset_name"] = "ManiSkill"
                 data_pack["action"] = [trajectory["actions"][idx]]
                 data_pack["observation"] = {}
-                data_pack["observation"]["image_primary"] = {}  # 假设图像在观测中
+                data_pack["observation"]["image_primary"] = [obs["sensor_data"]["base_camera"]["rgb"]]  # 假设图像在观测中
                 data_pack["task"] = {}
-                data_pack["task"]["language_instruction"] = eps.get("language_instruction", "No instruction")  # 假设有语言指令
+                data_pack["task"]["language_instruction"] = self.language_instruction  # 假设有语言指令
             
                 self.data.append(data_pack)
                 
@@ -163,7 +173,7 @@ if __name__ == "__main__":
     vla_path = None #'/home/yunqiliu/vlatune/transfer/openvla_param'
     processor = None #AutoProcessor.from_pretrained(vla_path, trust_remote_code=True)
     action_tokenizer = None #ActionTokenizer(processor.tokenizer)
-    dataset_file = '/home/v-wenhuitan/hs/simplerEnv/data_maniskill/PlugCharger-v1/motionplanning/trajectory.h5'
+    dataset_file = '/home/v-wenhuitan/hs/simplerEnv/data_maniskill/PlugCharger-v1/motionplanning/trajectory.rgb.pd_joint_pos.cpu.h5'
     
     dataset = ManiSkillToPizzaDataset(
         dataset_file=dataset_file,
